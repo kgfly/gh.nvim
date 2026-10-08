@@ -164,10 +164,36 @@ function M.remote_branch_exists(remote_url, branch)
     end
 end
 
+-- object_exists reports whether the given revision is present in the local
+-- repository.
+function M.object_exists(commit)
+    if commit == nil then
+        return false
+    end
+    return git_trim({ "git", "cat-file", "-e", tostring(commit) .. "^{commit}" }) ~= nil
+end
+
+-- merge_base returns the best common ancestor of two revisions, or nil when it
+-- cannot be computed (for example when one side is not in our object store).
+function M.merge_base(a, b)
+    if a == nil or b == nil then
+        return nil
+    end
+    return git_trim({ "git", "merge-base", tostring(a), tostring(b) })
+end
+
 function M.git_show_and_write(commit, file, write_to)
-    local cmd = string.format([[git show %s:%s > %s]], commit, file, write_to)
+    -- remember whether the commit is known at all: the file may simply not exist
+    -- at that commit (an added file, which legitimately diffs an empty buffer),
+    -- but an unknown commit means the diff pane would be empty for the wrong
+    -- reason. `git show ... > file` hides both behind the same empty file.
+    local commit_known = M.object_exists(commit)
+    local cmd = string.format([[git show %s > %s]],
+        vim.fn.shellescape(commit .. ":" .. file), vim.fn.shellescape(write_to))
     local out = git_exec(cmd)
-    if out == nil then
+    if out == nil or not commit_known then
+        -- keep the redirect's contract: the target exists and is empty.
+        vim.fn.writefile({}, write_to)
         return nil
     end
     return out

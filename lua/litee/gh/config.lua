@@ -42,6 +42,12 @@ M.config = {
     -- (needs telescope-ui-select.nvim) and threads/new comments open in
     -- floating windows. when false, threads open in the diff's other pane.
     use_telescope = false,
+    -- when true, opening a pull request refuses to run while the repository has
+    -- uncommitted changes (gh.nvim checks out commits of the pull request).
+    -- default false: a work in progress opens anyway, with a warning, and the
+    -- diff's right side is your working tree, so the uncommitted changes show up
+    -- in the diff. any checkout that would overwrite them is still refused by git.
+    require_clean_repo = false,
     -- defines keymaps in gh.nvim buffers.
     keymaps = {
         -- when inside a gh.nvim panel, this key will open a node if it has

@@ -538,13 +538,26 @@ function M.open_diffsplit(commit, file, thread, compare_base)
     -- write the old version of the file to /tmp/ and diff it
     local parent_commit = nil
     if compare_base then
-        parent_commit = s.pull_state.pr_raw.base.sha
+        -- GitHub computes a pull request's file patches against the merge base of
+        -- the head and the base branch, so diff that same commit. pr_raw.base.sha
+        -- is the *tip* of the base branch, which moves on every push to it and is
+        -- therefore usually absent from our object store -- which used to render an
+        -- empty left pane (and misalign the hunks mapped from file["patch"]).
+        local head_sha = s.pull_state.pr_raw["head"]["sha"]
+        parent_commit = gitcli.merge_base(head_sha, s.pull_state.pr_raw["base"]["sha"])
+            or gitcli.merge_base(head_sha, s.pull_state.pr_raw["base"]["ref"])
+            or s.pull_state.pr_raw["base"]["sha"]
     else
         parent_commit = commit["parents"][1]["sha"]
     end
 
     diff_buffer_name = diff_buffer_name or string.format("/tmp/%s", lib_util_path.basename(diff_filename))
-    gitcli.git_show_and_write(parent_commit, diff_filename, diff_buffer_name)
+    local base_written = gitcli.git_show_and_write(parent_commit, diff_filename, diff_buffer_name)
+    if base_written == nil and file["status"] ~= "added" then
+        lib_notify.notify_popup_with_timeout(string.format(
+            "No copy of %s at %s in this repository, left pane is empty. Run `git fetch` then reopen the pull request.",
+            diff_filename, tostring(parent_commit):sub(1, 8)), 7500, "error")
+    end
     vim.cmd("vert diffsplit " .. diff_buffer_name)
     vim.cmd("q")
     vim.cmd("vert diffsplit " .. diff_buffer_name)

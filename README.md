@@ -127,6 +127,11 @@ require('litee.gh').setup({
   -- new comments open in floating windows. when false, threads open in the
   -- diff's other pane. see "Telescope and floating threads" below.
   use_telescope = false,
+  -- when true, opening a pull request refuses to run if the repository has
+  -- uncommitted changes. default false: review work in progress, the diff's
+  -- right side is then your working tree, changes and all. see "Dirty
+  -- worktrees" below.
+  require_clean_repo = false,
   -- defines keymaps in gh.nvim buffers.
   keymaps = {
       -- when inside a gh.nvim panel, this key will open a node if it has
@@ -192,6 +197,22 @@ and [telescope-ui-select.nvim](https://github.com/nvim-telescope/telescope-ui-se
 
 With the default `use_telescope = false`, pickers use whatever `vim.ui.select` is
 configured and threads replace the diff buffer in the opposite pane.
+
+#### Dirty worktrees
+
+gh.nvim does not require a clean repository. When `git status --porcelain` is not
+empty you get a warning and the pull request opens anyway: the diff's right side is
+your working tree, so a work in progress shows up in the diff. Any checkout that
+would overwrite those changes is still refused by git.
+
+Set
+
+```lua
+require("litee.gh").setup({ require_clean_repo = true })
+```
+
+to make an unclean repository a hard error instead, so `GHOpenPR` refuses to run
+until the changes are stashed or committed.
 
 Additionally, you may want to set up some [which
 key](https://github.com/folke/which-key.nvim) bindings to help navigate all of the
