@@ -1204,6 +1204,103 @@ function M.set_notification_ignored(thread_id)
     return gh_exec(cmd, true)
 end
 
+-- gh_api_json runs `gh api` with an optional JSON body sent via --input (keeps
+-- large payloads off argv). Unlike gh_exec, a "message" key is not treated as
+-- an error since git commit objects carry one.
+local function gh_api_json(host, method, path, body)
+    local args = { "api", "--hostname", host, "--method", method, path }
+    local tmp
+    if body ~= nil then
+        tmp = vim.fn.tempname()
+        local f = io.open(tmp, "wb")
+        if f == nil then
+            return nil
+        end
+        f:write(vim.json.encode(body))
+        f:close()
+        table.insert(args, "--input")
+        table.insert(args, tmp)
+    end
+    local out = gh_exec(args, true)
+    if tmp ~= nil then
+        os.remove(tmp)
+    end
+    if out == nil then
+        return nil
+    end
+    local ok, decoded = pcall(vim.json.decode, out)
+    if not ok or type(decoded) ~= "table" then
+        return nil
+    end
+    return decoded
+end
+
+-- upload_file commits a local file to `branch` of `repo` ("owner/name") on
+-- `host` using the Git Data API, creating the branch on first use. GitHub has
+-- no public API for comment attachments, so the returned blob URL (pinned to
+-- the new commit) is what gets embedded in markdown.
+--
+-- returns the URL, or nil and an error message.
+function M.upload_file(host, repo, html_url, branch, file_path, dest_path)
+    local f = io.open(file_path, "rb")
+    if f == nil then
+        return nil, "cannot read " .. file_path
+    end
+    local data = f:read("*a")
+    f:close()
+
+    local git = "/repos/" .. repo .. "/git/"
+    local blob = gh_api_json(host, "POST", git .. "blobs", {
+        content = vim.base64.encode(data),
+        encoding = "base64",
+    })
+    if blob == nil then
+        return nil, "failed to create blob in " .. repo .. " (push access required)"
+    end
+
+    -- retry if another upload moves the branch between read and update.
+    for _ = 1, 3 do
+        local ref = gh_api_json(host, "GET", git .. "ref/heads/" .. branch)
+        local parent = ref ~= nil and ref.object ~= nil and ref.object.sha or nil
+        local base_tree
+        if parent ~= nil then
+            local parent_commit = gh_api_json(host, "GET", git .. "commits/" .. parent)
+            if parent_commit == nil then
+                return nil, "failed to read branch " .. branch
+            end
+            base_tree = parent_commit.tree.sha
+        end
+
+        local tree = gh_api_json(host, "POST", git .. "trees", {
+            base_tree = base_tree,
+            tree = { { path = dest_path, mode = "100644", type = "blob", sha = blob.sha } },
+        })
+        if tree == nil then
+            return nil, "failed to create tree"
+        end
+
+        local commit = gh_api_json(host, "POST", git .. "commits", {
+            message = "gh.nvim: add " .. dest_path,
+            tree = tree.sha,
+            parents = { parent },
+        })
+        if commit == nil then
+            return nil, "failed to create commit"
+        end
+
+        local updated
+        if parent ~= nil then
+            updated = gh_api_json(host, "PATCH", git .. "refs/heads/" .. branch, { sha = commit.sha })
+        else
+            updated = gh_api_json(host, "POST", git .. "refs", { ref = "refs/heads/" .. branch, sha = commit.sha })
+        end
+        if updated ~= nil then
+            return string.format("%s/blob/%s/%s?raw=true", html_url, commit.sha, dest_path)
+        end
+    end
+    return nil, "failed to update branch " .. branch
+end
+
 M.user = nil
 
 -- like get_user but caches the results on the first request and returns the

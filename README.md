@@ -123,6 +123,10 @@ require('litee.gh').setup({
   -- whether to register the @username and #issue_number omnifunc completion
   -- in buffers which start with .git/
   git_buffer_completion = true,
+  -- when true, gh.nvim pickers use a telescope dropdown and review threads /
+  -- new comments open in floating windows. when false, threads open in the
+  -- diff's other pane. see "Telescope and floating threads" below.
+  use_telescope = false,
   -- defines keymaps in gh.nvim buffers.
   keymaps = {
       -- when inside a gh.nvim panel, this key will open a node if it has
@@ -161,6 +165,33 @@ fzf.lua, add the following snippet to your config:
 ```lua
 vim.cmd("FzfLua register_ui_select")
 ```
+
+#### Telescope and floating threads
+
+Set `use_telescope = true` to switch gh.nvim to a telescope-based UI:
+
+- gh.nvim's pickers (open PR, search issues, review actions, labels, reactions, ...)
+  open in a telescope dropdown. Only gh.nvim's `vim.ui.select` calls are routed to
+  telescope; other plugins keep their own `vim.ui.select`.
+- `GHToggleThreads` and `GHCreateThread` open the thread / new comment in a
+  floating window at the cursor, so both diff panes stay visible. Toggle again, or
+  close the float, to dismiss it.
+
+This requires [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim)
+and [telescope-ui-select.nvim](https://github.com/nvim-telescope/telescope-ui-select.nvim):
+
+```lua
+{
+    "ldelossa/gh.nvim",
+    dependencies = { "ldelossa/litee.nvim", "nvim-telescope/telescope-ui-select.nvim" },
+    config = function()
+        require("litee.gh").setup({ use_telescope = true })
+    end,
+}
+```
+
+With the default `use_telescope = false`, pickers use whatever `vim.ui.select` is
+configured and threads replace the diff buffer in the opposite pane.
 
 Additionally, you may want to set up some [which
 key](https://github.com/folke/which-key.nvim) bindings to help navigate all of the
