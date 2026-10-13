@@ -20,6 +20,10 @@ local function git_trim(args)
     return vim.trim(out)
 end
 
+function M.toplevel()
+    return git_trim({ "git", "rev-parse", "--show-toplevel" })
+end
+
 local function head_desc()
     return git_trim({ "git", "symbolic-ref", "--quiet", "--short", "HEAD" })
         or ("detached at " .. (git_trim({ "git", "rev-parse", "--short", "HEAD" }) or "?"))

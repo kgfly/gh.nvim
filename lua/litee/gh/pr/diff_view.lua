@@ -405,8 +405,34 @@ local function right_pane_col(tab)
     return right_col
 end
 
--- left-anchored float (telescope look, 90% height) that stops short of the right pane.
+-- the gh diff's left pane when it is a normal window in `tab` (nil otherwise).
+local function left_pane_win(tab)
+    local w = state and state.lwin
+    if w == nil or not vim.api.nvim_win_is_valid(w) then return nil end
+    if vim.api.nvim_win_get_tabpage(w) ~= (tab or vim.api.nvim_get_current_tabpage()) then return nil end
+    if vim.api.nvim_win_get_config(w).relative ~= "" then return nil end
+    return w
+end
+
+-- float laid exactly over the diff's left pane (border included), so the right pane stays visible;
+-- without a usable left pane: left-anchored, 90% height, stopping short of the rightmost column.
 local function thread_float_config(title, tab)
+    local cfg = {
+        relative = "editor",
+        border = telescope_border(),
+        title = title,
+        title_pos = "center",
+        zindex = 99,
+    }
+    local lwin = left_pane_win(tab)
+    if lwin then
+        local w, h = vim.api.nvim_win_get_width(lwin), vim.api.nvim_win_get_height(lwin)
+        if w >= 22 and h >= 7 then
+            local pos = vim.api.nvim_win_get_position(lwin)
+            cfg.row, cfg.col, cfg.width, cfg.height = pos[1], pos[2], w - 2, h - 2
+            return cfg
+        end
+    end
     local lines = vim.o.lines - vim.o.cmdheight
     local min_width = math.min(vim.o.columns, 40)
     local right_col = right_pane_col(tab)
@@ -414,31 +440,57 @@ local function thread_float_config(title, tab)
     local width = right_col and right_col - 1 or 0
     if width < min_width then width = math.max(min_width, math.floor(vim.o.columns * 0.6)) end
     local height = math.max(5, math.floor(lines * 0.9))
-    return {
-        relative = "editor",
-        row = math.floor((lines - height) / 2),
-        col = 0,
-        width = width - 2,
-        height = height - 2,
-        border = telescope_border(),
-        title = title,
-        title_pos = "center",
-        zindex = 99,
-    }
+    cfg.row = math.floor((lines - height) / 2)
+    cfg.col = 0
+    cfg.width = width - 2
+    cfg.height = height - 2
+    return cfg
 end
 
+-- lay the float out in its box, then shrink it to the wrapped text height (never taller than the box).
 local function fit_thread_float(win)
     if win == nil or not vim.api.nvim_win_is_valid(win) then return end
     if vim.api.nvim_win_get_config(win).relative == "" then return end
-    vim.api.nvim_win_set_config(win, thread_float_config(vim.w[win].gh_float_title, vim.api.nvim_win_get_tabpage(win)))
+    local cfg = thread_float_config(vim.w[win].gh_float_title, vim.api.nvim_win_get_tabpage(win))
+    local max_height = cfg.height
+    -- width first: the text height depends on where lines wrap
+    vim.api.nvim_win_set_config(win, cfg)
+    local ok, th = pcall(vim.api.nvim_win_text_height, win, {})
+    if ok and th.all < max_height then
+        cfg.height = math.max(3, th.all)
+        vim.api.nvim_win_set_config(win, cfg)
+        -- everything fits: keep the view at the top instead of a scrolled-down remnant
+        vim.api.nvim_win_call(win, function() vim.fn.winrestview({ topline = 1 }) end)
+    end
 end
 
 local function open_thread_float(buf, title)
     local win = vim.api.nvim_open_win(buf, true, thread_float_config(title))
     vim.w[win].gh_float_title = title
-    vim.wo[win].wrap = true
+    -- floats copy window options from the diff pane they open over; drop diff/scroll binding
+    -- (it would pull the thread buffer into the diff) and wrap long lines at word boundaries.
+    for opt, val in pairs({ diff = false, scrollbind = false, cursorbind = false, foldenable = false,
+                            wrap = true, linebreak = true, breakindent = true }) do
+        vim.wo[win][opt] = val
+    end
     vim.wo[win].winhighlight = "Normal:TelescopeNormal,NormalFloat:TelescopeNormal,FloatBorder:TelescopeBorder,FloatTitle:TelescopeTitle"
-    -- WinResized also covers splits opening/closing/resizing, so the float tracks the right pane.
+    fit_thread_float(win)
+    -- follow the text height as the thread re-renders or a reply is typed
+    local pending = false
+    vim.api.nvim_buf_attach(buf, false, {
+        on_lines = function()
+            if not vim.api.nvim_win_is_valid(win) then return true end
+            if pending then return end
+            pending = true
+            vim.schedule(function()
+                pending = false
+                if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf then
+                    fit_thread_float(win)
+                end
+            end)
+        end,
+    })
+    -- WinResized also covers splits opening/closing/resizing, so the float tracks the left pane.
     vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
         callback = function()
             if not vim.api.nvim_win_is_valid(win) then return true end
@@ -517,10 +569,14 @@ function M.open_diffsplit(commit, file, thread, compare_base)
     local diff_filename = file["filename"]
     local diff_buffer_name = nil
 
+    -- PR paths are repo-root relative; nvim's cwd may be a subdirectory.
+    local root = gitcli.toplevel()
+    local worktree_file = vim.fn.fnameescape(root and (root .. "/" .. file["filename"]) or file["filename"])
+
     vim.fn.delete("/tmp/gh-nvim-empty")
     -- if the file is added, open our local file and diff an empty buffer
     if file["status"] == "added" then
-        vim.cmd("edit " .. file["filename"])
+        vim.cmd("edit " .. worktree_file)
         diff_buffer_name = "/tmp/gh-nvim-empty"
     -- if the file is removed, open an empty buffer first and diff the old
     -- old version
@@ -532,7 +588,7 @@ function M.open_diffsplit(commit, file, thread, compare_base)
         if file["status"] == "renamed" then
             diff_filename = file["previous_filename"]
         end
-        vim.cmd("edit " .. file["filename"])
+        vim.cmd("edit " .. worktree_file)
     end
 
     -- write the old version of the file to /tmp/ and diff it
